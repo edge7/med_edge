@@ -1,9 +1,14 @@
 """
 Clean benchmark script for MedQA using proprietary models (OpenAI, Anthropic, etc.).
 Refactored to use shared utilities from benchmark_utils.py
+
+Usage:
+    python -m med_edge.benchmark.simple_run_proprietary --model "openai/gpt-4" --output-dir ./results
+    python -m med_edge.benchmark.simple_run_proprietary --model "anthropic/claude-3-5-sonnet-20241022" --output-dir ./results --env-file .env
+    python -m med_edge.benchmark.simple_run_proprietary --help
 """
 
-import os
+import click
 import pandas as pd
 from pathlib import Path
 from tqdm import tqdm
@@ -15,34 +20,14 @@ from med_edge.llm_basic.generic_request import get_single_answer_benchmark
 from med_edge.benchmark.benchmark_utils import parse_medqa_sample
 
 
-# Load API keys from .env file
-env_path = Path("/home/edge7/Desktop/projects/ing_edurso/luminai_backend/luminai_backend/.env")
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-    logger.info(f"✅ Loaded API keys from {env_path}")
-else:
-    logger.warning(f"⚠️  .env file not found at {env_path}")
-
-
-# ============================================================================
-# CONFIGURATION - Edit these values
-# ============================================================================
-MODEL = "google/gemini-3-pro-preview"  # e.g., "openai/gpt-4", "anthropic/claude-3-5-sonnet-20241022"
-SPLIT = "test"  # train, val, or test
-LIMIT = None  # Number of samples to test (None = all)
-OUTPUT_DIR = "/media/edge7/Extreme Pro/med_edge/benchmarks_proprietary"
-VERBOSE = False  # Set to True to verify exact prompts being sent
-# ============================================================================
-
-
-def run_inference(question, options, ground_truth):
+def run_inference(question, options, ground_truth, config):
     """Run inference on a single question using instructor."""
     try:
         response = get_single_answer_benchmark(
-            model=MODEL,
+            model=config['model'],
             question=question,
             options=options,
-            verbose=VERBOSE,
+            verbose=config['verbose'],
         )
 
         predicted_answer = response['answer']
@@ -57,7 +42,7 @@ def run_inference(question, options, ground_truth):
 
     except Exception as e:
         error_msg = str(e).split('\n')[0][:200]
-        logger.error(f"❌ Error: {error_msg}")
+        logger.error(f"Error: {error_msg}")
         return {
             'predicted_answer': None,
             'ground_truth': ground_truth,
@@ -66,28 +51,48 @@ def run_inference(question, options, ground_truth):
         }
 
 
-def main():
-    logger.info(f"🚀 Starting benchmark: {MODEL} on {SPLIT} split")
-    if LIMIT:
-        logger.info(f"📊 Limit: {LIMIT} samples")
+@click.command()
+@click.option('--model', '-m', required=True, help='Model name (e.g., "openai/gpt-4", "anthropic/claude-3-5-sonnet-20241022")')
+@click.option('--split', '-s', type=click.Choice(['train', 'val', 'test']), default='test', help='Dataset split')
+@click.option('--limit', '-l', type=int, default=None, help='Limit number of samples (default: all)')
+@click.option('--output-dir', '-o', type=click.Path(), required=True, help='Output directory for results')
+@click.option('--env-file', type=click.Path(exists=True), default=None, help='Path to .env file with API keys')
+@click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
+def main(model, split, limit, output_dir, env_file, verbose):
+    """Run MedQA benchmark with proprietary models (OpenAI, Anthropic, etc.)."""
+
+    # Load environment variables if env file provided
+    if env_file:
+        load_dotenv(dotenv_path=env_file)
+        logger.info(f"Loaded API keys from {env_file}")
+
+    # Build config dict
+    config = {
+        'model': model,
+        'verbose': verbose,
+    }
+
+    logger.info(f"Starting benchmark: {model} on {split} split")
+    if limit:
+        logger.info(f"Limit: {limit} samples")
 
     # Load dataset
     dataset = get_med_qa_dataset()
-    data = {'train': dataset.train, 'val': dataset.val, 'test': dataset.test}[SPLIT]
+    data = {'train': dataset.train, 'val': dataset.val, 'test': dataset.test}[split]
 
-    if LIMIT:
-        data = data.select(range(min(LIMIT, len(data))))
+    if limit:
+        data = data.select(range(min(limit, len(data))))
 
-    # Prepare output file (NO timestamp for resume support)
-    output_path = Path(OUTPUT_DIR)
+    # Prepare output file
+    output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    model_safe = MODEL.replace('/', '_')
-    csv_file = output_path / f"{model_safe}_{SPLIT}.csv"
+    model_safe = model.replace('/', '_')
+    csv_file = output_path / f"{model_safe}_{split}.csv"
 
     # Run inference on all samples
     results = []
 
-    for idx, sample in enumerate(tqdm(data, desc=f"Running inference [{SPLIT}]", unit=" questions")):
+    for idx, sample in enumerate(tqdm(data, desc=f"Running inference [{split}]", unit=" questions")):
         import time
         parsed = parse_medqa_sample(sample, idx)
 
@@ -96,6 +101,7 @@ def main():
             question=parsed['question'],
             options=parsed['options'],
             ground_truth=parsed['ground_truth'],
+            config=config,
         )
         result['inference_time_seconds'] = time.time() - start_time
 
@@ -103,8 +109,8 @@ def main():
         result['question_index'] = idx
         result['sample_id'] = parsed['sample_id']
         result['dataset_name'] = 'medqa'
-        result['split_name'] = SPLIT
-        result['model'] = MODEL
+        result['split_name'] = split
+        result['model'] = model
         result['question'] = parsed['question']
 
         # Add options as separate columns
@@ -122,8 +128,8 @@ def main():
     correct_count = df['is_correct'].sum()
     total_count = len(df)
 
-    logger.success(f"\n✅ Accuracy: {accuracy:.2%} ({correct_count}/{total_count})")
-    logger.success(f"📁 Results saved to: {csv_file}")
+    logger.success(f"\nAccuracy: {accuracy:.2%} ({correct_count}/{total_count})")
+    logger.success(f"Results saved to: {csv_file}")
 
     return df
 
