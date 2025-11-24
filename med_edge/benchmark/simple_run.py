@@ -1,9 +1,13 @@
 """
 Clean benchmark script for MedQA using open-source models (vLLM).
 Refactored to use shared utilities from benchmark_utils.py
+
+Usage:
+    python -m med_edge.benchmark.simple_run --model "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B" --base-url "http://localhost:8000/v1"
+    python -m med_edge.benchmark.simple_run --help
 """
 
-import hashlib
+import click
 from pathlib import Path
 from tqdm import tqdm
 from loguru import logger
@@ -25,38 +29,22 @@ from med_edge.benchmark.benchmark_utils import (
 )
 
 
-# ============================================================================
-# CONFIGURATION - Edit these values
-# ============================================================================
-MODEL_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B"
-BASE_URL = "http://192.222.53.56:8000/v1"
-SPLIT = "test"  # train, val, or test
-LIMIT = None  # Number of samples to test (None = all)
-TEMPERATURE = 0.6  # 1.0 for OPENAI; 0.6 DeepSeek
-MAX_TOKENS = 32768  # Max tokens for generation
-REASONING_EFFORT = None  # None, "low", "mid", or "high" (for GPT-OSS only)
-OUTPUT_DIR = "/media/edge7/Extreme Pro/med_edge/benchmarks_test"
-NUM_THREADS = 4  # Number of concurrent threads (4 is safe for vLLM)
-VERBOSE = False  # Set to True to see exact prompts
-# ============================================================================
-
-
-def run_inference(question, options, ground_truth, max_retries=2):
+def run_inference(question, options, ground_truth, config, max_retries=2):
     """Run inference with retry logic."""
     import time
 
     for attempt in range(max_retries + 1):
         try:
             response = get_single_answer_vllm_native(
-                model_name=MODEL_NAME,
+                model_name=config['model_name'],
                 question=question,
                 options=options,
-                base_url=BASE_URL,
+                base_url=config['base_url'],
                 api_key="EMPTY",
-                temperature=TEMPERATURE,
-                max_tokens=MAX_TOKENS,
-                reasoning_effort=REASONING_EFFORT,
-                verbose=VERBOSE,
+                temperature=config['temperature'],
+                max_tokens=config['max_tokens'],
+                reasoning_effort=config['reasoning_effort'],
+                verbose=config['verbose'],
             )
 
             predicted_answer = response['answer']
@@ -76,9 +64,10 @@ def run_inference(question, options, ground_truth, max_retries=2):
                 'usage': response['usage'],
                 'reasoning_content': response.get('reasoning_content', ''),
                 'finish_reason': response.get('finish_reason', None),
-                'temperature': TEMPERATURE,
-                'max_tokens': MAX_TOKENS,
-                'reasoning_effort': REASONING_EFFORT,
+                'temperature': config['temperature'],
+                'max_tokens': config['max_tokens'],
+                'reasoning_effort': config['reasoning_effort'],
+                'model_name': config['model_name'],
             }
 
             # Serialize logprobs with assertions
@@ -94,10 +83,10 @@ def run_inference(question, options, ground_truth, max_retries=2):
         except Exception as e:
             error_msg = str(e).split('\n')[0][:200]
             if attempt < max_retries:
-                logger.warning(f"⚠️  Attempt {attempt + 1} failed: {error_msg}. Retrying in 2s...")
+                logger.warning(f"Attempt {attempt + 1} failed: {error_msg}. Retrying in 2s...")
                 time.sleep(2)
             else:
-                logger.error(f"❌ All {max_retries + 1} attempts failed: {error_msg}")
+                logger.error(f"All {max_retries + 1} attempts failed: {error_msg}")
                 return {
                     'answer': None,
                     'ground_truth': ground_truth,
@@ -107,35 +96,58 @@ def run_inference(question, options, ground_truth, max_retries=2):
     return None
 
 
-def main():
-    logger.info(f"🚀 Starting benchmark: {MODEL_NAME} on {SPLIT} split")
-    if LIMIT:
-        logger.info(f"📊 Limit: {LIMIT} samples")
+@click.command()
+@click.option('--model', '-m', required=True, help='Model name (e.g., "deepseek-ai/DeepSeek-R1-Distill-Qwen-32B")')
+@click.option('--base-url', '-u', required=True, help='vLLM server URL (e.g., "http://localhost:8000/v1")')
+@click.option('--split', '-s', type=click.Choice(['train', 'val', 'test']), default='test', help='Dataset split')
+@click.option('--limit', '-l', type=int, default=None, help='Limit number of samples (default: all)')
+@click.option('--temperature', '-t', type=float, default=0.6, help='Sampling temperature (default: 0.6)')
+@click.option('--max-tokens', type=int, default=32768, help='Max tokens for generation (default: 32768)')
+@click.option('--reasoning-effort', type=click.Choice(['low', 'mid', 'high']), default=None, help='Reasoning effort level')
+@click.option('--output-dir', '-o', type=click.Path(), required=True, help='Output directory for results')
+@click.option('--threads', type=int, default=3, help='Number of concurrent threads (default: 3)')
+@click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
+def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose):
+    """Run MedQA benchmark with open-source models via vLLM."""
+
+    # Build config dict for passing to functions
+    config = {
+        'model_name': model,
+        'base_url': base_url,
+        'temperature': temperature,
+        'max_tokens': max_tokens,
+        'reasoning_effort': reasoning_effort,
+        'verbose': verbose,
+    }
+
+    logger.info(f"Starting benchmark: {model} on {split} split")
+    if limit:
+        logger.info(f"Limit: {limit} samples")
 
     # Load dataset
     dataset = get_med_qa_dataset()
-    data = {'train': dataset.train, 'val': dataset.val, 'test': dataset.test}[SPLIT]
+    data = {'train': dataset.train, 'val': dataset.val, 'test': dataset.test}[split]
 
-    if LIMIT:
-        data = data.select(range(min(LIMIT, len(data))))
+    if limit:
+        data = data.select(range(min(limit, len(data))))
 
     # Setup output
-    output_path = Path(OUTPUT_DIR)
+    output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    model_safe = MODEL_NAME.replace('/', '_')
-    json_file = output_path / f"{model_safe}_{SPLIT}.jsonl.gz"
+    model_safe = model.replace('/', '_')
+    json_file = output_path / f"{model_safe}_{split}.jsonl.gz"
 
     # Resume logic
     raw_results, completed_sample_ids = setup_resume_logic(json_file, len(data))
 
     questions_to_process = sum(1 for sample in data if get_sample_id_from_medqa(sample) not in completed_sample_ids)
     if questions_to_process == 0:
-        logger.success(f"✅ All questions already completed!")
+        logger.success(f"All questions already completed!")
         stats = calculate_accuracy_summary(raw_results)
         log_accuracy_summary(stats)
         return raw_results
 
-    logger.info(f"📝 Processing {questions_to_process}/{len(data)} questions with {NUM_THREADS} threads")
+    logger.info(f"Processing {questions_to_process}/{len(data)} questions with {threads} threads")
 
     SAVE_EVERY = 30
 
@@ -147,12 +159,12 @@ def main():
 
         parsed = parse_medqa_sample(sample, idx)
         start_time = time.time()
-        raw_data = run_inference(parsed['question'], parsed['options'], parsed['ground_truth'])
+        raw_data = run_inference(parsed['question'], parsed['options'], parsed['ground_truth'], config)
         raw_data['inference_time_seconds'] = time.time() - start_time
 
         # Add metadata
         raw_data['dataset_name'] = 'medqa'
-        raw_data['split_name'] = SPLIT
+        raw_data['split_name'] = split
         raw_data['question_index'] = idx
         raw_data['sample_id'] = parsed['sample_id']
         raw_data['question'] = parsed['question']
@@ -162,13 +174,13 @@ def main():
         return idx, raw_data
 
     # Run inference in parallel
-    with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
+    with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(process_sample, idx, sample): idx
                    for idx, sample in enumerate(data)
                    if get_sample_id_from_medqa(sample) not in completed_sample_ids}
 
         completed_count = 0
-        with tqdm(total=len(data), desc=f"Running inference [{SPLIT}]", unit=" questions",
+        with tqdm(total=len(data), desc=f"Running inference [{split}]", unit=" questions",
                   initial=len(data) - questions_to_process) as pbar:
             for future in as_completed(futures):
                 try:
@@ -182,9 +194,9 @@ def main():
                             try:
                                 completed_raw = [r for r in raw_results if r is not None]
                                 atomic_save_json(completed_raw, json_file)
-                                logger.info(f"💾 Checkpoint: {len(completed_raw)}/{len(data)}")
+                                logger.info(f"Checkpoint: {len(completed_raw)}/{len(data)}")
                             except Exception as save_err:
-                                logger.error(f"⚠️  Checkpoint save failed: {save_err}")
+                                logger.error(f"Checkpoint save failed: {save_err}")
 
                 except Exception as e:
                     idx = futures[future]
@@ -205,11 +217,11 @@ def main():
     # Calculate and log accuracy
     stats = calculate_accuracy_summary(raw_results)
     log_accuracy_summary(stats)
-    logger.success(f"📁 Results saved to: {json_file}")
+    logger.success(f"Results saved to: {json_file}")
 
     # Print summary
     logger.info("\n=== SUMMARY ===")
-    logger.info(f"Dataset: medqa/{SPLIT}")
+    logger.info(f"Dataset: medqa/{split}")
     logger.info(f"Samples: {stats['total_count']}")
     logger.info(f"Accuracy: {stats['accuracy']:.2%}")
 
