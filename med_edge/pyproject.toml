@@ -1,0 +1,26 @@
+[project]
+name = "med-edge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "loguru>=0.7.3",
+    "datasets==2.16.0",
+    "instructor[xai]>=1.13.0",
+    "google-genai>=1.49.0",
+    "openai>=2.7.1",
+    "anthropic>=0.72.0",
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+    "tqdm>=4.67.1",
+    "matplotlib>=3.10.7",
+    "seaborn>=0.13.2",
+    "python-dotenv>=1.0.0",
+    "jsonref>=1.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.1",
+]
