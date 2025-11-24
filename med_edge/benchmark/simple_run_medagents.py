@@ -124,7 +124,7 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     model_safe = config['model_name'].replace('/', '_')
-    json_file = output_path / f"{model_safe}_medagents_{dataset_config}_test.jsonl.gz"
+    json_file = output_path / f"{model_safe}_medagents_{dataset_config}_test_raw.jsonl.gz"
 
     # Resume logic
     raw_results, completed_sample_ids = setup_resume_logic(json_file, len(test_data))

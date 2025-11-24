@@ -135,7 +135,7 @@ def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effor
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     model_safe = model.replace('/', '_')
-    json_file = output_path / f"{model_safe}_{split}.jsonl.gz"
+    json_file = output_path / f"{model_safe}_{split}_raw.jsonl.gz"
 
     # Resume logic
     raw_results, completed_sample_ids = setup_resume_logic(json_file, len(data))
