@@ -24,9 +24,6 @@ from med_edge.benchmark.benchmark_utils import (
     parse_medagents_sample,
     append_jsonl,
     setup_resume_logic_jsonl,
-    load_all_results_jsonl,
-    calculate_accuracy_summary,
-    log_accuracy_summary,
 )
 
 
@@ -133,8 +130,7 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
     questions_to_process = sum(1 for sample in test_data if sample['realidx'] not in completed_sample_ids)
     if questions_to_process == 0:
         logger.success(f"All questions already completed for {dataset_config}!")
-        all_results = load_all_results_jsonl(jsonl_file)
-        return all_results
+        return
 
     logger.info(f"Processing {questions_to_process}/{len(test_data)} questions with {threads} threads")
 
@@ -198,20 +194,7 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
                     append_jsonl(error_result, jsonl_file)
                     pbar.update(1)
 
-    # Calculate and log accuracy from file
-    logger.info("Calculating final accuracy...")
-    all_results = load_all_results_jsonl(jsonl_file)
-    stats = calculate_accuracy_summary(all_results, has_hard_subset=True)
-    log_accuracy_summary(stats)
     logger.success(f"Results saved to: {jsonl_file}")
-
-    # Print summary
-    logger.info("\n=== SUMMARY ===")
-    logger.info(f"Dataset: medagents-benchmark/{dataset_config}")
-    logger.info(f"Samples: {stats['total_count']}")
-    logger.info(f"Accuracy: {stats['accuracy']:.2%}")
-
-    return all_results
 
 
 @click.command()
@@ -254,41 +237,15 @@ def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_eff
     logger.info(f"   Configs: {', '.join(configs_to_run)}")
     logger.info("=" * 80)
 
-    results_summary = {}
-
     for idx, dataset_config in enumerate(configs_to_run, 1):
         logger.info(f"\n\n{'=' * 80}")
         logger.info(f"CONFIG {idx}/{len(configs_to_run)}: {dataset_config}")
         logger.info(f"{'=' * 80}\n")
 
         try:
-            results = run_single_config(dataset_config, config, output_dir, threads, limit)
-            correct_count = sum(1 for r in results if r and r.get('is_correct', False))
-            accuracy = correct_count / len(results) if len(results) > 0 else 0.0
-            results_summary[dataset_config] = {
-                'samples': len(results),
-                'accuracy': accuracy,
-                'status': 'completed'
-            }
+            run_single_config(dataset_config, config, output_dir, threads, limit)
         except Exception as e:
             logger.error(f"Failed to process config {dataset_config}: {str(e)}")
-            results_summary[dataset_config] = {
-                'samples': 0,
-                'accuracy': 0.0,
-                'status': 'failed',
-                'error': str(e)
-            }
-
-    # Print final summary
-    logger.info("\n\n" + "=" * 80)
-    logger.info("FINAL SUMMARY - ALL CONFIGS")
-    logger.info("=" * 80)
-    for dataset_config, stats in results_summary.items():
-        if stats['status'] == 'completed':
-            logger.info(f"  {dataset_config:15s}: {stats['accuracy']:.2%} ({stats['samples']} samples)")
-        else:
-            logger.error(f"  {dataset_config:15s}: FAILED - {stats.get('error', 'Unknown error')}")
-    logger.info("=" * 80)
 
 
 if __name__ == "__main__":

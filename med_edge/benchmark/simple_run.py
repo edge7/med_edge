@@ -23,9 +23,6 @@ from med_edge.benchmark.benchmark_utils import (
     parse_medqa_sample,
     append_jsonl,
     setup_resume_logic_jsonl,
-    load_all_results_jsonl,
-    calculate_accuracy_summary,
-    log_accuracy_summary,
     get_sample_id_from_medqa,
 )
 
@@ -144,10 +141,7 @@ def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effor
     questions_to_process = sum(1 for sample in data if get_sample_id_from_medqa(sample) not in completed_sample_ids)
     if questions_to_process == 0:
         logger.success(f"All questions already completed!")
-        all_results = load_all_results_jsonl(jsonl_file)
-        stats = calculate_accuracy_summary(all_results)
-        log_accuracy_summary(stats)
-        return all_results
+        return
 
     logger.info(f"Processing {questions_to_process}/{len(data)} questions with {threads} threads")
 
@@ -208,20 +202,7 @@ def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effor
                     append_jsonl(error_result, jsonl_file)
                     pbar.update(1)
 
-    # Calculate and log accuracy from file
-    logger.info("Calculating final accuracy...")
-    all_results = load_all_results_jsonl(jsonl_file)
-    stats = calculate_accuracy_summary(all_results)
-    log_accuracy_summary(stats)
     logger.success(f"Results saved to: {jsonl_file}")
-
-    # Print summary
-    logger.info("\n=== SUMMARY ===")
-    logger.info(f"Dataset: medqa/{split}")
-    logger.info(f"Samples: {stats['total_count']}")
-    logger.info(f"Accuracy: {stats['accuracy']:.2%}")
-
-    return all_results
 
 
 if __name__ == "__main__":
