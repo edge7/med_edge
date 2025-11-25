@@ -22,8 +22,9 @@ from med_edge.llm_basic.vllm_native_request import (
 )
 from med_edge.benchmark.benchmark_utils import (
     parse_medagents_sample,
-    atomic_save_json,
-    setup_resume_logic,
+    append_jsonl,
+    setup_resume_logic_jsonl,
+    load_all_results_jsonl,
     calculate_accuracy_summary,
     log_accuracy_summary,
 )
@@ -124,19 +125,18 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     model_safe = config['model_name'].replace('/', '_')
-    json_file = output_path / f"{model_safe}_medagents_{dataset_config}_test_raw.jsonl.gz"
+    jsonl_file = output_path / f"{model_safe}_medagents_{dataset_config}_test_raw.jsonl"
 
-    # Resume logic
-    raw_results, completed_sample_ids = setup_resume_logic(json_file, len(test_data))
+    # Resume logic - memory efficient, only loads sample IDs
+    completed_sample_ids = setup_resume_logic_jsonl(jsonl_file)
 
     questions_to_process = sum(1 for sample in test_data if sample['realidx'] not in completed_sample_ids)
     if questions_to_process == 0:
         logger.success(f"All questions already completed for {dataset_config}!")
-        return raw_results
+        all_results = load_all_results_jsonl(jsonl_file)
+        return all_results
 
     logger.info(f"Processing {questions_to_process}/{len(test_data)} questions with {threads} threads")
-
-    SAVE_EVERY = 30
 
     def process_sample(idx, sample):
         import time
@@ -163,51 +163,47 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
         return idx, raw_data
 
     # Run inference in parallel
+    completed_count = len(completed_sample_ids)
     with ThreadPoolExecutor(max_workers=threads) as executor:
         futures = {executor.submit(process_sample, idx, sample): idx
                    for idx, sample in enumerate(test_data)
                    if sample['realidx'] not in completed_sample_ids}
 
-        completed_count = 0
         with tqdm(total=len(test_data), desc=f"Running inference [{dataset_config}]", unit=" questions",
                   initial=len(test_data) - questions_to_process) as pbar:
             for future in as_completed(futures):
                 try:
                     result_idx, raw_data = future.result()
                     if raw_data is not None:
-                        raw_results[result_idx] = raw_data
+                        # Append immediately to JSONL - memory efficient
+                        append_jsonl(raw_data, jsonl_file)
                         completed_count += 1
                         pbar.update(1)
 
-                        if completed_count % SAVE_EVERY == 0:
-                            try:
-                                completed_raw = [r for r in raw_results if r is not None]
-                                atomic_save_json(completed_raw, json_file)
-                                logger.info(f"Checkpoint: {len(completed_raw)}/{len(test_data)}")
-                            except Exception as save_err:
-                                logger.error(f"Checkpoint save failed: {save_err}")
+                        if completed_count % 30 == 0:
+                            logger.info(f"Progress: {completed_count}/{len(test_data)}")
 
                 except Exception as e:
                     idx = futures[future]
                     logger.error(f"Task {idx} failed: {str(e)}")
-                    raw_results[idx] = {
+                    error_result = {
                         'dataset_name': 'medagents-benchmark',
                         'dataset_config': dataset_config,
                         'question_index': idx,
+                        'sample_id': test_data[idx]['realidx'],
                         'answer': None,
                         'is_correct': False,
                         'error': str(e),
                     }
+                    append_jsonl(error_result, jsonl_file)
                     pbar.update(1)
 
-    # Save final results
-    logger.info("Saving final JSON")
-    atomic_save_json(raw_results, json_file)
-
-    # Calculate and log accuracy
-    stats = calculate_accuracy_summary(raw_results, has_hard_subset=True)
+    # Calculate and log accuracy from file
+    logger.info("Calculating final accuracy...")
+    all_results = load_all_results_jsonl(jsonl_file)
+    stats = calculate_accuracy_summary(all_results, has_hard_subset=True)
     log_accuracy_summary(stats)
-    logger.success(f"Results saved to: {json_file}")
+    logger.success(f"Results saved to: {jsonl_file}")
 
     # Print summary
     logger.info("\n=== SUMMARY ===")
@@ -215,7 +211,7 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
     logger.info(f"Samples: {stats['total_count']}")
     logger.info(f"Accuracy: {stats['accuracy']:.2%}")
 
-    return raw_results
+    return all_results
 
 
 @click.command()

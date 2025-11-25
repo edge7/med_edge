@@ -6,8 +6,12 @@ Eliminates code duplication across benchmark runners.
 import json
 import gzip
 import hashlib
+import threading
 from pathlib import Path
 from loguru import logger
+
+# Thread lock for safe concurrent JSONL appends
+_jsonl_write_lock = threading.Lock()
 
 
 # ============================================================================
@@ -101,15 +105,93 @@ def parse_medagents_sample(sample, is_hard=False):
 # File I/O Utilities
 # ============================================================================
 
-def atomic_save_json(data, file_path, compresslevel=6):
+def append_jsonl(result, file_path):
     """
-    Atomically save data to a gzipped JSON file.
-    Uses temp file + rename to prevent corruption.
+    Append a single result to a JSONL file.
+    Memory-efficient: no need to load/rewrite entire file.
+    Thread-safe: uses lock to prevent interleaved writes.
 
     Args:
-        data: Data to save (must be JSON-serializable)
-        file_path: Path to save to (Path object or str)
-        compresslevel: Gzip compression level (1-9)
+        result: Single result dict to append
+        file_path: Path to JSONL file
+    """
+    file_path = Path(file_path)
+    line = json.dumps(result, ensure_ascii=False) + '\n'
+    with _jsonl_write_lock:
+        with open(file_path, 'a', encoding='utf-8') as f:
+            f.write(line)
+
+
+def load_completed_ids_jsonl(file_path):
+    """
+    Stream JSONL file to extract only sample_ids.
+    Memory-efficient: doesn't load entire file into memory.
+
+    Args:
+        file_path: Path to JSONL file
+
+    Returns:
+        set of completed sample_ids
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return set()
+
+    completed_ids = set()
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                item = json.loads(line)
+                sample_id = item.get('sample_id')
+                if sample_id is not None:
+                    completed_ids.add(sample_id)
+
+        logger.info(f"📊 Loaded {len(completed_ids)} completed sample IDs")
+        return completed_ids
+
+    except Exception as e:
+        logger.warning(f"⚠️  Could not load existing results: {e}")
+        return set()
+
+
+def load_all_results_jsonl(file_path):
+    """
+    Load all results from a JSONL file.
+    Use this only when you need the full data (e.g., for accuracy calculation).
+
+    Args:
+        file_path: Path to JSONL file
+
+    Returns:
+        list of result dicts
+    """
+    file_path = Path(file_path)
+    if not file_path.exists():
+        return []
+
+    results = []
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                results.append(json.loads(line))
+        return results
+
+    except Exception as e:
+        logger.warning(f"⚠️  Could not load results: {e}")
+        return []
+
+
+# Legacy functions for backward compatibility with old gzipped JSON format
+def atomic_save_json(data, file_path, compresslevel=6):
+    """
+    [LEGACY] Atomically save data to a gzipped JSON file.
+    Prefer append_jsonl() for new code.
     """
     file_path = Path(file_path)
     temp_path = file_path.with_suffix(file_path.suffix + '.tmp')
@@ -122,13 +204,8 @@ def atomic_save_json(data, file_path, compresslevel=6):
 
 def load_json_results(file_path):
     """
-    Load results from a gzipped JSON file.
-
-    Args:
-        file_path: Path to JSON file
-
-    Returns:
-        tuple: (results_list, completed_sample_ids_set)
+    [LEGACY] Load results from a gzipped JSON file.
+    Prefer load_completed_ids_jsonl() for new code.
     """
     file_path = Path(file_path)
     if not file_path.exists():
@@ -138,12 +215,13 @@ def load_json_results(file_path):
         with gzip.open(file_path, 'rt', encoding='utf-8') as f:
             results = json.load(f)
 
-        # Extract completed sample IDs
         completed_ids = set()
         for item in results:
             sample_id = item.get('sample_id')
             if sample_id is not None:
                 completed_ids.add(sample_id)
+            else:
+                raise Exception("Sample ID is None but should not!")
 
         return results, completed_ids
 
@@ -233,9 +311,36 @@ def log_accuracy_summary(accuracy_stats):
 # Resume Logic Helpers
 # ============================================================================
 
+def setup_resume_logic_jsonl(jsonl_file):
+    """
+    Set up resume logic for a benchmark run using JSONL format.
+    Memory-efficient: only loads sample IDs, not full results.
+
+    Args:
+        jsonl_file: Path to results JSONL file
+
+    Returns:
+        set of completed_sample_ids
+    """
+    jsonl_file = Path(jsonl_file)
+
+    if jsonl_file.exists():
+        logger.info(f"📂 Found existing results file: {jsonl_file}")
+        completed_ids = load_completed_ids_jsonl(jsonl_file)
+
+        if completed_ids:
+            logger.info(f"✅ Found {len(completed_ids)} already completed questions - will skip these")
+
+        return completed_ids
+
+    return set()
+
+
+# Legacy function for backward compatibility
 def setup_resume_logic(json_file, data_length):
     """
-    Set up resume logic for a benchmark run.
+    [LEGACY] Set up resume logic for a benchmark run.
+    Prefer setup_resume_logic_jsonl() for new code.
 
     Args:
         json_file: Path to results JSON file
