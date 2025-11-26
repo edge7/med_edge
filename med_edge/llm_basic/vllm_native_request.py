@@ -39,12 +39,13 @@ class MedicalMCQResponse(BaseModel):
         return v
 
 
-def create_dynamic_mcq_response(valid_options: list[str]) -> type[BaseModel]:
+def create_dynamic_mcq_response(valid_options: list[str], allow_abstain: bool = False) -> type[BaseModel]:
     """
     Dynamically create a Pydantic model for MCQ responses with specific valid options.
 
     Args:
         valid_options: List of valid answer options (e.g., ['a', 'b', 'c'] or ['a', 'b', 'c', 'd', 'e'])
+        allow_abstain: If True, adds 'x' as a valid option for "I don't know" responses
 
     Returns:
         A Pydantic BaseModel class with the answer field restricted to the valid options
@@ -52,9 +53,16 @@ def create_dynamic_mcq_response(valid_options: list[str]) -> type[BaseModel]:
     # Ensure options are lowercase
     valid_options = [opt.lower() for opt in valid_options]
 
+    # Add abstention option if enabled
+    if allow_abstain:
+        valid_options = valid_options + ['x']
+
     # Create description string
     options_str = ", ".join(valid_options)
-    description = f"The selected answer choice ({options_str}). Must be exactly one of these lowercase letters."
+    if allow_abstain:
+        description = f"The selected answer choice ({options_str}). Use 'x' if you are genuinely uncertain."
+    else:
+        description = f"The selected answer choice ({options_str}). Must be exactly one of these lowercase letters."
 
     # Create Literal type from options
     from typing import get_args
@@ -88,6 +96,7 @@ def get_single_answer_vllm_native(
     top_logprobs: int = 20,  # Increased to capture all a-e alternatives + JSON tokens
     reasoning_effort: Optional[str] = None,  # "low", "mid", "high" for reasoning models
     verbose: bool = False,
+    allow_abstain: bool = False,  # If True, allows "x" as "I don't know" response
 ):
     """
     Get a single answer using vLLM's native structured outputs (no instructor).
@@ -105,6 +114,7 @@ def get_single_answer_vllm_native(
         max_tokens: Maximum tokens to generate
         top_logprobs: Number of top logprobs to return per token (default: 5)
         verbose: If True, prints the exact request being sent
+        allow_abstain: If True, allows the model to respond with "x" meaning "I don't know"
 
     Returns:
         dict: Response containing answer, usage info, and logprobs
@@ -119,22 +129,27 @@ def get_single_answer_vllm_native(
     options_text = "\n".join([f"{key.upper()}. {value}" for key, value in options.items()])
     user_prompt = f"{question}\n\nOptions:\n{options_text}"
 
+    # Build system prompt (with optional abstention instruction)
+    system_prompt = MEDICAL_BENCHMARK_SYSTEM_PROMPT
+    if allow_abstain:
+        system_prompt += "\n- If you are genuinely uncertain and cannot determine the best answer, you may respond with 'x' to indicate \"I don't know\" rather than guessing."
+
     # Prepare messages
     messages = [
-        {"role": "system", "content": MEDICAL_BENCHMARK_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
     # Get JSON schema from Pydantic model
-    # Use dynamic schema if options don't match the default 5 options (a-e)
+    # Use dynamic schema if options don't match the default 5 options (a-e) OR if abstention is enabled
     valid_options = sorted(options.keys())
-    if set(valid_options) == {'a', 'b', 'c', 'd', 'e'}:
-        # Standard 5 options, use default model
+    if set(valid_options) == {'a', 'b', 'c', 'd', 'e'} and not allow_abstain:
+        # Standard 5 options without abstention, use default model
         response_model = MedicalMCQResponse
         json_schema = response_model.model_json_schema()
     else:
-        # Non-standard options (3 or 4 options), use dynamic model
-        response_model = create_dynamic_mcq_response(valid_options)
+        # Non-standard options OR abstention enabled, use dynamic model
+        response_model = create_dynamic_mcq_response(valid_options, allow_abstain=allow_abstain)
         json_schema = response_model.model_json_schema()
 
     if verbose:

@@ -49,10 +49,12 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 max_tokens=config['max_tokens'],
                 reasoning_effort=config['reasoning_effort'],
                 verbose=config['verbose'],
+                allow_abstain=config.get('allow_abstain', False),
             )
 
             predicted_answer = response['answer']
-            is_correct = (predicted_answer == ground_truth)
+            is_abstain = (predicted_answer == 'x')
+            is_correct = (predicted_answer == ground_truth) if not is_abstain else False
 
             # Run feature extraction for validation/assertions only
             if 'logprobs' in response and response['logprobs']:
@@ -66,6 +68,7 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 'answer': response['answer'],
                 'ground_truth': ground_truth,
                 'is_correct': is_correct,
+                'is_abstain': is_abstain,
                 'usage': response['usage'],
                 'reasoning_content': response.get('reasoning_content', ''),
                 'finish_reason': response.get('finish_reason', None),
@@ -209,7 +212,8 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
 @click.option('--output-dir', '-o', type=click.Path(), required=True, help='Output directory for results')
 @click.option('--threads', type=int, default=2, help='Number of concurrent threads (default: 2)')
 @click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
-def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose):
+@click.option('--allow-abstain', is_flag=True, default=False, help='Allow model to respond with "x" (I don\'t know) when uncertain')
+def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose, allow_abstain):
     """Run medagents-benchmark with open-source models via vLLM."""
 
     # Build config dict for passing to functions
@@ -220,6 +224,7 @@ def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_eff
         'max_tokens': max_tokens,
         'reasoning_effort': reasoning_effort,
         'verbose': verbose,
+        'allow_abstain': allow_abstain,
     }
 
     # Determine which configs to run
@@ -235,6 +240,7 @@ def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_eff
     logger.info(f"   Model: {model}")
     logger.info(f"   Total configs: {len(configs_to_run)}")
     logger.info(f"   Configs: {', '.join(configs_to_run)}")
+    logger.info(f"   Allow abstain: {allow_abstain}")
     logger.info("=" * 80)
 
     for idx, dataset_config in enumerate(configs_to_run, 1):
