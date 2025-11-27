@@ -120,6 +120,7 @@ def append_jsonl(result, file_path):
     with _jsonl_write_lock:
         with open(file_path, 'a', encoding='utf-8') as f:
             f.write(line)
+            f.flush()
 
 
 def load_completed_ids_jsonl(file_path):

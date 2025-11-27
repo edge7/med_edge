@@ -208,7 +208,7 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
 @click.option('--limit', '-l', type=int, default=None, help='Limit number of samples per config (default: all)')
 @click.option('--temperature', '-t', type=float, default=0.6, help='Sampling temperature (default: 0.6)')
 @click.option('--max-tokens', type=int, default=22768, help='Max tokens for generation (default: 32768)')
-@click.option('--reasoning-effort', type=click.Choice(['low', 'mid', 'high']), default=None, help='Reasoning effort level')
+@click.option('--reasoning-effort', type=click.Choice(['low', 'medium', 'high']), default=None, help='Reasoning effort level')
 @click.option('--output-dir', '-o', type=click.Path(), required=True, help='Output directory for results')
 @click.option('--threads', type=int, default=2, help='Number of concurrent threads (default: 2)')
 @click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
