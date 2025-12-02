@@ -50,6 +50,7 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 reasoning_effort=config['reasoning_effort'],
                 verbose=config['verbose'],
                 allow_abstain=config.get('allow_abstain', False),
+                ask_prob=config.get('ask_prob', False),
             )
 
             predicted_answer = response['answer']
@@ -77,6 +78,10 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 'reasoning_effort': config['reasoning_effort'],
                 'model_name': config['model_name'],
             }
+
+            # Add verbalized confidence if available
+            if 'verbalized_confidence' in response:
+                raw_data['verbalized_confidence'] = response['verbalized_confidence']
 
             # Serialize logprobs with assertions
             if 'logprobs' in response and response['logprobs']:
@@ -213,7 +218,8 @@ def run_single_config(dataset_config, config, output_dir, threads, limit):
 @click.option('--threads', type=int, default=2, help='Number of concurrent threads (default: 2)')
 @click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
 @click.option('--allow-abstain', is_flag=True, default=False, help='Allow model to respond with "x" (I don\'t know) when uncertain')
-def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose, allow_abstain):
+@click.option('--ask-prob', is_flag=True, default=False, help='Ask model to provide verbalized confidence score (1-100) with the answer')
+def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose, allow_abstain, ask_prob):
     """Run medagents-benchmark with open-source models via vLLM."""
 
     # Build config dict for passing to functions
@@ -225,6 +231,7 @@ def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_eff
         'reasoning_effort': reasoning_effort,
         'verbose': verbose,
         'allow_abstain': allow_abstain,
+        'ask_prob': ask_prob,
     }
 
     # Determine which configs to run
@@ -241,6 +248,7 @@ def main(model, base_url, configs, limit, temperature, max_tokens, reasoning_eff
     logger.info(f"   Total configs: {len(configs_to_run)}")
     logger.info(f"   Configs: {', '.join(configs_to_run)}")
     logger.info(f"   Allow abstain: {allow_abstain}")
+    logger.info(f"   Ask prob: {ask_prob}")
     logger.info("=" * 80)
 
     for idx, dataset_config in enumerate(configs_to_run, 1):

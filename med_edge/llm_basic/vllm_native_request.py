@@ -39,13 +39,14 @@ class MedicalMCQResponse(BaseModel):
         return v
 
 
-def create_dynamic_mcq_response(valid_options: list[str], allow_abstain: bool = False) -> type[BaseModel]:
+def create_dynamic_mcq_response(valid_options: list[str], allow_abstain: bool = False, ask_prob: bool = False) -> type[BaseModel]:
     """
     Dynamically create a Pydantic model for MCQ responses with specific valid options.
 
     Args:
         valid_options: List of valid answer options (e.g., ['a', 'b', 'c'] or ['a', 'b', 'c', 'd', 'e'])
         allow_abstain: If True, adds 'x' as a valid option for "I don't know" responses
+        ask_prob: If True, adds a confidence field (1-100) for verbalized probability
 
     Returns:
         A Pydantic BaseModel class with the answer field restricted to the valid options
@@ -68,21 +69,42 @@ def create_dynamic_mcq_response(valid_options: list[str], allow_abstain: bool = 
     from typing import get_args
     literal_type = Literal[tuple(valid_options)]  # type: ignore
 
-    # Dynamically create the model
-    class DynamicMedicalMCQResponse(BaseModel):
-        """Dynamically generated response model for medical multiple choice questions"""
-        answer: literal_type = Field(description=description)  # type: ignore
+    # Dynamically create the model based on whether we need confidence
+    if ask_prob:
+        class DynamicMedicalMCQResponseWithConfidence(BaseModel):
+            """Dynamically generated response model for medical multiple choice questions with confidence"""
+            answer: literal_type = Field(description=description)  # type: ignore
+            confidence: int = Field(
+                description="Your confidence score from 1 to 100. 1 means very uncertain, 100 means absolutely certain.",
+                ge=1,
+                le=100
+            )
 
-        @field_validator("answer")
-        @classmethod
-        def validate_answer(cls, v: str) -> str:
-            """Ensure answer is lowercase and one of the valid choices"""
-            v = v.lower()
-            if v not in valid_options:
-                raise ValueError(f"Answer must be one of {options_str}. Got: {v}")
-            return v
+            @field_validator("answer")
+            @classmethod
+            def validate_answer(cls, v: str) -> str:
+                """Ensure answer is lowercase and one of the valid choices"""
+                v = v.lower()
+                if v not in valid_options:
+                    raise ValueError(f"Answer must be one of {options_str}. Got: {v}")
+                return v
 
-    return DynamicMedicalMCQResponse
+        return DynamicMedicalMCQResponseWithConfidence
+    else:
+        class DynamicMedicalMCQResponse(BaseModel):
+            """Dynamically generated response model for medical multiple choice questions"""
+            answer: literal_type = Field(description=description)  # type: ignore
+
+            @field_validator("answer")
+            @classmethod
+            def validate_answer(cls, v: str) -> str:
+                """Ensure answer is lowercase and one of the valid choices"""
+                v = v.lower()
+                if v not in valid_options:
+                    raise ValueError(f"Answer must be one of {options_str}. Got: {v}")
+                return v
+
+        return DynamicMedicalMCQResponse
 
 
 def get_single_answer_vllm_native(
@@ -97,6 +119,7 @@ def get_single_answer_vllm_native(
     reasoning_effort: Optional[str] = None,  # "low", "mid", "high" for reasoning models
     verbose: bool = False,
     allow_abstain: bool = False,  # If True, allows "x" as "I don't know" response
+    ask_prob: bool = False,  # If True, asks for verbalized confidence score (1-100)
 ):
     """
     Get a single answer using vLLM's native structured outputs (no instructor).
@@ -115,9 +138,10 @@ def get_single_answer_vllm_native(
         top_logprobs: Number of top logprobs to return per token (default: 5)
         verbose: If True, prints the exact request being sent
         allow_abstain: If True, allows the model to respond with "x" meaning "I don't know"
+        ask_prob: If True, asks for a verbalized confidence score (1-100) with the answer
 
     Returns:
-        dict: Response containing answer, usage info, and logprobs
+        dict: Response containing answer, usage info, logprobs, and optionally verbalized_confidence
     """
     # Create OpenAI client pointing to vLLM server
     client = OpenAI(
@@ -129,10 +153,12 @@ def get_single_answer_vllm_native(
     options_text = "\n".join([f"{key.upper()}. {value}" for key, value in options.items()])
     user_prompt = f"{question}\n\nOptions:\n{options_text}"
 
-    # Build system prompt (with optional abstention instruction)
+    # Build system prompt (with optional abstention instruction and confidence request)
     system_prompt = MEDICAL_BENCHMARK_SYSTEM_PROMPT
     if allow_abstain:
         system_prompt += "\n- If you are genuinely uncertain and cannot determine the best answer, you may respond with 'x' to indicate \"I don't know\" rather than guessing."
+    if ask_prob:
+        system_prompt += "\n- Along with your answer, provide a confidence score from 1 to 100 indicating how certain you are about your answer. 1 means very uncertain (essentially guessing), 100 means absolutely certain."
 
     # Prepare messages
     messages = [
@@ -141,15 +167,15 @@ def get_single_answer_vllm_native(
     ]
 
     # Get JSON schema from Pydantic model
-    # Use dynamic schema if options don't match the default 5 options (a-e) OR if abstention is enabled
+    # Use dynamic schema if options don't match the default 5 options (a-e) OR if abstention/ask_prob is enabled
     valid_options = sorted(options.keys())
-    if set(valid_options) == {'a', 'b', 'c', 'd', 'e'} and not allow_abstain:
-        # Standard 5 options without abstention, use default model
+    if set(valid_options) == {'a', 'b', 'c', 'd', 'e'} and not allow_abstain and not ask_prob:
+        # Standard 5 options without abstention or confidence, use default model
         response_model = MedicalMCQResponse
         json_schema = response_model.model_json_schema()
     else:
-        # Non-standard options OR abstention enabled, use dynamic model
-        response_model = create_dynamic_mcq_response(valid_options, allow_abstain=allow_abstain)
+        # Non-standard options OR abstention/ask_prob enabled, use dynamic model
+        response_model = create_dynamic_mcq_response(valid_options, allow_abstain=allow_abstain, ask_prob=ask_prob)
         json_schema = response_model.model_json_schema()
 
     if verbose:
@@ -255,6 +281,10 @@ def get_single_answer_vllm_native(
             "reasoning_content": reasoning_content,
             "finish_reason": response.choices[0].finish_reason,  # Track truncation!
         }
+
+        # Add verbalized confidence if ask_prob was enabled
+        if ask_prob and hasattr(validated, 'confidence'):
+            result["verbalized_confidence"] = validated.confidence
 
         return result
 
