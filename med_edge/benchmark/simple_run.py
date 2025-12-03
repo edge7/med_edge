@@ -43,6 +43,7 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 max_tokens=config['max_tokens'],
                 reasoning_effort=config['reasoning_effort'],
                 verbose=config['verbose'],
+                ask_prob=config.get('ask_prob', False),
             )
 
             predicted_answer = response['answer']
@@ -67,6 +68,10 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
                 'reasoning_effort': config['reasoning_effort'],
                 'model_name': config['model_name'],
             }
+
+            # Add verbalized confidence if available
+            if 'verbalized_confidence' in response:
+                raw_data['verbalized_confidence'] = response['verbalized_confidence']
 
             # Serialize logprobs with assertions
             if 'logprobs' in response and response['logprobs']:
@@ -101,11 +106,12 @@ def run_inference(question, options, ground_truth, config, max_retries=2):
 @click.option('--limit', '-l', type=int, default=None, help='Limit number of samples (default: all)')
 @click.option('--temperature', '-t', type=float, default=0.6, help='Sampling temperature (default: 0.6)')
 @click.option('--max-tokens', type=int, default=32768, help='Max tokens for generation (default: 32768)')
-@click.option('--reasoning-effort', type=click.Choice(['low', 'mid', 'high']), default=None, help='Reasoning effort level')
+@click.option('--reasoning-effort', type=click.Choice(['low', 'medium', 'high']), default=None, help='Reasoning effort level')
 @click.option('--output-dir', '-o', type=click.Path(), required=True, help='Output directory for results')
-@click.option('--threads', type=int, default=3, help='Number of concurrent threads (default: 3)')
+@click.option('--threads', type=int, default=4, help='Number of concurrent threads (default: 3)')
 @click.option('--verbose', '-v', is_flag=True, help='Show exact prompts being sent')
-def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose):
+@click.option('--ask-prob', is_flag=True, default=False, help='Ask model to provide verbalized confidence score (1-100) with the answer')
+def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effort, output_dir, threads, verbose, ask_prob):
     """Run MedQA benchmark with open-source models via vLLM."""
 
     # Build config dict for passing to functions
@@ -116,6 +122,7 @@ def main(model, base_url, split, limit, temperature, max_tokens, reasoning_effor
         'max_tokens': max_tokens,
         'reasoning_effort': reasoning_effort,
         'verbose': verbose,
+        'ask_prob': ask_prob,
     }
 
     logger.info(f"Starting benchmark: {model} on {split} split")
